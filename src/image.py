@@ -1,43 +1,34 @@
 import cv2
 import numpy as np
+from util import *
 
-class MyColor():
-    '''
-    COLOR   = (  B,   G,   R)
-    '''
-    RED     = (  0,   0, 255)
-    GREEN   = (  0, 255,   0)
-    BLUE    = (255,   0,   0)
-    WHITE   = (255, 255, 255)
-    BLACK   = (  0,   0,   0)
-
-class MyDirection():
-
-    TOP     = 0
-    BOTTOM  = 1
-    LEFT    = 2
-    RIGHT   = 3
+class MyGridMesh():
+    pass
 
 class MyImage():
 
     def __init__(self, filename):
         assert filename[-4:] == '.png'
         image = cv2.imread(filename, -1)
-        self.rgb = image[:, :, :3]
-        self.mask = image[:, :, 3]
+        self.rgb_init = image[:, :, :3]
+        self.mask_init = image[:, :, 3]
 
         self.height = image.shape[0]
         self.width = image.shape[1]
 
         self.seam_path_history = []
-        self.local_warp_matrix = []
+        self.local_warp_inverse_mapping = {}
 
         for y in range(self.height):
             for x in range(self.width):
-                if self.mask[y][x] == 0:
-                    self.rgb[y][x] = 0
+                self.local_warp_inverse_mapping[(x, y)] = (x, y)
+                if self.mask_init[y][x] == 0:
+                    self.rgb_init[y][x] = 0
                 else:
-                    self.mask[y][x] = 255
+                    self.mask_init[y][x] = 255
+
+        self.rgb = self.rgb_init.copy()
+        self.mask = self.mask_init.copy()
 
         self.grey = cv2.cvtColor(self.rgb, cv2.COLOR_BGR2GRAY)
         self._reset()
@@ -248,32 +239,72 @@ class MyImage():
 
         for pt_y, pt_x in seam_path:
             if shift_direction == 1:
+                for y in reversed(range(pt_y, self.height)):
+                    self.local_warp_inverse_mapping[(pt_x, y)] = self.local_warp_inverse_mapping[(pt_x, y-1)]
                 for mat in [self.rgb, self.mask, self.grey]:
                     mat[pt_y+1:, pt_x] =  mat[pt_y:-1, pt_x]
                     mat[pt_y, pt_x] = mat[pt_y+1, pt_x]
             elif shift_direction == -1:
-                for mat in [self.rgb, self.mask, self.grey]:
+                for y in range(0, pt_y):
+                    self.local_warp_inverse_mapping[(pt_x, y)] = self.local_warp_inverse_mapping[(pt_x, y+1)]
+                for mat in [self.rgb, self.mask, self.grey]: 
                     mat[:pt_y, pt_x] = mat[1:pt_y+1, pt_x]
                     mat[pt_y, pt_x] = mat[pt_y-1, pt_x]
 
         self._reset()
-        cv2.imshow('tmp', self.rgb)
+        #cv2.imshow('tmp', self.rgb)
 
     def add_seam_vertical(self, seam_path, shift_direction):
 
         for pt_y, pt_x in seam_path:
             #print(pt_x, pt_y)
             if shift_direction == 1:
+                for x in reversed(range(pt_x, self.width)):
+                    self.local_warp_inverse_mapping[(x, pt_y)] = self.local_warp_inverse_mapping[(x-1, pt_y)]
                 for mat in [self.rgb, self.mask, self.grey]:
                     mat[pt_y, pt_x+1:] = mat[pt_y, pt_x:-1]
                     mat[pt_y, pt_x] = mat[pt_y, pt_x+1]
             elif shift_direction == -1:
+                for x in range(0, pt_x):
+                    self.local_warp_inverse_mapping[(x, pt_y)] = self.local_warp_inverse_mapping[(x+1, pt_y)]
                 for mat in [self.rgb, self.mask, self.grey]:
                     mat[pt_y, :pt_x] = mat[pt_y, 1:pt_x+1]
                     mat[pt_y, pt_x] = mat[pt_y, pt_x-1]
 
         self._reset()
-        cv2.imshow('tmp', self.rgb)
+        #cv2.imshow('tmp', self.rgb)
+
+    def generate_grid_mesh(self, n_grid_y=5, n_grid_x=5):
+
+        all_grid_x = np.linspace(0, self.width-1, n_grid_x, dtype=int)
+        all_grid_y = np.linspace(0, self.height-1, n_grid_y, dtype=int)
+
+        self.grid_mesh_vertices = []
+        self.grid_mesh_edges = set()
+
+        for id_y in range(n_grid_y):
+            for id_x in range(n_grid_x):
+                pt_1 = (all_grid_x[id_x], all_grid_y[id_y])
+                self.grid_mesh_vertices.append(pt_1)
+                if id_x != 0:
+                    pt_2 = (all_grid_x[id_x-1], all_grid_y[id_y])
+                    self.grid_mesh_edges.add((pt_1, pt_2))
+                if id_x != n_grid_x-1:
+                    pt_2 = (all_grid_x[id_x+1], all_grid_y[id_y])
+                    self.grid_mesh_edges.add((pt_1, pt_2))
+                if id_y != 0:
+                    pt_2 = (all_grid_x[id_x], all_grid_y[id_y-1])
+                    self.grid_mesh_edges.add((pt_1, pt_2))
+                if id_y != n_grid_y-1:
+                    pt_2 = (all_grid_x[id_x], all_grid_y[id_y+1])
+                    self.grid_mesh_edges.add((pt_1, pt_2))
+
+        for v in self.grid_mesh_vertices:
+            #self.local_warp_inverse_mapping[v] = (new_v_x, new_v_y)
+            print(v, self.local_warp_inverse_mapping[v])
+
+        canvas = self.mark_grid_mesh(inverse=True, color=MyColor.GREEN)
+        cv2.imshow('grid', canvas)
 
     def get_longest_blank_segment_in_row(self, row_idx):
         row = self.mask[row_idx, :]
@@ -319,7 +350,7 @@ class MyImage():
         canvas = self.rgb.copy()
         cv2.line(canvas, left_top_pos, right_bottom_pos, color, 1)
 
-        #cv2.imshow('Result', canvas)
+        return canvas
 
     def mark_domain(self, x_start, x_end, y_start, y_end, color=MyColor.RED):
         canvas = self.rgb.copy()
@@ -347,3 +378,37 @@ class MyImage():
                 canvas[pt[0], pt[1], :] = MyColor.RED
 
         return canvas
+
+    def mark_grid_mesh(self, inverse=False, color=MyColor.RED):
+        canvas = self.rgb_init.copy()
+
+        if inverse == False:
+            for e in self.grid_mesh_edges:
+                cv2.line(canvas, e[0], e[1], color, 1)
+        else:
+            for e in self.grid_mesh_edges:
+                cv2.line(canvas, self.local_warp_inverse_mapping[e[0]], self.local_warp_inverse_mapping[e[1]], color, 1)
+
+        return canvas
+                
+
+    def draw_local_warp(self):
+
+        canvas = np.zeros((self.height, self.width, 3), np.uint8)
+
+        for pt in self.local_warp_inverse_mapping:
+            new_x, new_y = self.local_warp_inverse_mapping[pt]
+            canvas[pt] = self.rgb_init[new_y, new_x]
+
+        return canvas
+
+
+
+
+
+
+
+
+
+
+
